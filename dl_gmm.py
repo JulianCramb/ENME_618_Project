@@ -4,18 +4,19 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 from utilities import load_lidar, visualize, simulate_noise
+import pdb
 
 # --- 1. CONFIGURATION CONSTANTS ---
 # X_DIM: 4 (X, Y, Z, Intensity)
 X_DIM = 4           # Input feature dimension
 Z_DIM = 4           # Dimension of the latent space (Z_c)
 # K is now defined as a range to test in the main execution block
-K_RANGE = [2, 4, 6, 8, 10] # Range of Gaussian components to test
-K_DEFAULT = 4       # Default K, used for module initialization if not training loop
+K_RANGE = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50] # Range of Gaussian components to test
+K_DEFAULT = 40      # Default K, used for module initialization if not training loop
 LAMBDA_1 = 1.0      # Weight for the GMM Energy term
 LAMBDA_2 = 0.005    # Weight for the penalty term
-EPOCHS = 10         # Reduced epochs for faster iterative selection
-BATCH_SIZE = 128    # Batch size
+EPOCHS = 20         # Reduced epochs for faster iterative selection
+BATCH_SIZE = 640    # Batch size
 LEARNING_RATE = 1e-4
 
 # Stability constants
@@ -23,7 +24,7 @@ EPSILON = 1e-12     # General small constant for stability
 COV_EPS = 1e-6      # Small constant added to covariance diagonal for stability
 ANOMALY_PERCENTILE = 95 # Threshold percentile for anomaly score (e.g., top 5% are anomalies)
 
-# --- 2. DLGMM Components (Unchanged) ---
+# --- 2. DLGMM Components ---
 
 class EncoderNet(nn.Module):
     """
@@ -65,7 +66,7 @@ class EstimationNet(nn.Module):
         gamma = torch.softmax(p, dim=1)
         return gamma
 
-# --- 3. GMM Helper Functions (Unchanged) ---
+# --- 3. GMM Helper Functions ---
 
 def calculate_gmm_parameters(z, gamma):
     """
@@ -193,35 +194,19 @@ class PointCloudDataset(Dataset):
     def __getitem__(self, idx):
         return self.data[idx]
 
-def generate_dummy_point_cloud_data(num_samples):
-    """Generates synthetic (X, Y, Z, Intensity) data for the demo."""
-    np.random.seed(42)
-    
-    # 1. 'Normal' Clusters (e.g., concentrated regions)
-    normal_loc_1 = [10, 10, 5, 0.5] # XYZI mean
-    normal_data_1 = np.random.normal(loc=normal_loc_1, scale=1.0, size=(num_samples // 3, 4))
-    
-    normal_loc_2 = [-10, -10, 2, 0.2]
-    normal_data_2 = np.random.normal(loc=normal_loc_2, scale=1.5, size=(num_samples // 3, 4))
-    
-    # 2. 'Anomalies' (e.g., spatially far or extremely high intensity)
-    # We will use this section to simulate 'test' data, but combine it for initial training
-    anomaly_data = np.random.uniform(low=[-50, -50, -10, 1.5], high=[50, 50, 10, 3.0], size=(num_samples // 3, 4))
-
-    X = np.concatenate([normal_data_1, normal_data_2, anomaly_data], axis=0)
-    np.random.shuffle(X)
-    print(f"Sample data generated: shape {X.shape} (N points x 4 features).")
-    return X
-
 
 def train_dlgmm(model, data_loader, optimizer, full_data_tensor):
     """
-    Training loop for the DLGMM model. Returns the trained model and final GMM parameters
+    Training loop for the DLGMM model. This version calculates and prints 
+    the average loss per epoch. It returns the trained model and final GMM parameters
     calculated over the *full* training tensor.
     """
     model.train()
     
     for epoch in range(1, EPOCHS + 1):
+        epoch_total_loss = 0.0
+        num_batches = 0
+        
         for x in data_loader:
             x = x.float() 
             optimizer.zero_grad()
@@ -234,6 +219,15 @@ def train_dlgmm(model, data_loader, optimizer, full_data_tensor):
 
             total_loss.backward()
             optimizer.step()
+            
+            # Accumulate loss for epoch average
+            epoch_total_loss += total_loss.item()
+            num_batches += 1
+            
+        avg_epoch_loss = epoch_total_loss / num_batches
+        
+        # Print the epoch's average loss
+        print(f"Epoch: {epoch}, Average Loss: {avg_epoch_loss:.6f}")
             
     # After final training epoch, calculate final GMM parameters over the *entire* dataset
     model.eval()
@@ -287,9 +281,20 @@ if __name__ == '__main__':
     N = cp_data.shape[0]
     sample_size = int(0.1 * N)
     indices = np.random.choice(N, sample_size, replace=False)
-    point_cloud_data_np = cp_data[indices]
+    cp_data_subset = cp_data[indices]
+
+    # --- Data Standardization Added Here ---
+    # Center the data
+    data_mean = np.mean(cp_data_subset, axis=0)
+    cp_data_subset -= data_mean
+    # Scale the data (Standardize)
+    data_std = np.std(cp_data_subset, axis=0)
+    # Prevent division by zero if a feature is constant
+    data_std[data_std == 0] = 1.0 
+    cp_data_subset /= data_std
+    print("Data successfully standardized (zero mean, unit variance).")
     
-    point_cloud_dataset = PointCloudDataset(point_cloud_data_np)
+    point_cloud_dataset = PointCloudDataset(cp_data_subset)
     data_loader = DataLoader(
         point_cloud_dataset,
         batch_size=BATCH_SIZE,
@@ -365,6 +370,10 @@ if __name__ == '__main__':
     test_anomaly = np.random.uniform(low=[100, 100, 100, 5.0], high=[200, 200, 200, 10.0], size=(5, 4))
     
     test_data_np = np.concatenate([test_normal, test_anomaly], axis=0)
+
+    # Apply the same standardization (using the training data's mean and std)
+    test_data_np = (test_data_np - data_mean) / data_std
+
     test_data_tensor = torch.from_numpy(test_data_np).float()
     
     test_scores = predict_anomaly_scores(
