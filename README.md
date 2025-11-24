@@ -10,3 +10,4 @@ By: Julian Cramb and Mabel Heffring
 5. **ENME_618_project.ipynb**: Notebook for GMM testing
 
 ## Environment
+1. **linux_requirements.txt**: Python environment used for autoencoder training (linux system)
