@@ -3,41 +3,35 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
-from utilities import load_lidar, visualize, simulate_noise
+from utilities import load_lidar, visualize, simulate_noise, visualize_anomalies, visualize_clusters
 import pdb
+import os
 
-# --- 1. CONFIGURATION CONSTANTS ---
-# X_DIM: 4 (X, Y, Z, Intensity)
-X_DIM = 4           # Input feature dimension
-Z_DIM = 4           # Dimension of the latent space (Z_c)
-# K is now defined as a range to test in the main execution block
-K_RANGE = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50] # Range of Gaussian components to test
-K_DEFAULT = 40      # Default K, used for module initialization if not training loop
-LAMBDA_1 = 1.0      # Weight for the GMM Energy term
-LAMBDA_2 = 0.005    # Weight for the penalty term
-EPOCHS = 20         # Reduced epochs for faster iterative selection
-BATCH_SIZE = 640    # Batch size
+# model params
+X_DIM = 4 
+Z_DIM = 4 
+K_RANGE = [48]
+K_DEFAULT = 48 
+LAMBDA_1 = 1.0 
+LAMBDA_2 = 0.005
+EPOCHS = 10 
+BATCH_SIZE = 640
 LEARNING_RATE = 1e-4
 
-# Stability constants
-EPSILON = 1e-12     # General small constant for stability
-COV_EPS = 1e-6      # Small constant added to covariance diagonal for stability
-ANOMALY_PERCENTILE = 95 # Threshold percentile for anomaly score (e.g., top 5% are anomalies)
+EPSILON = 1e-12
+COV_EPS = 1e-6
+ANOMALY_PERCENTILE = 95
 
-# --- 2. DLGMM Components ---
+# DLGMM
 
 class EncoderNet(nn.Module):
-    """
-    The Encoder Network (replaces CompressionNet)
-    Learns a latent representation Z_c directly from the input x.
-    """
     def __init__(self, x_dim, z_dim):
         super(EncoderNet, self).__init__()
         # Encoder: x_dim -> 10 -> z_dim
         self.encoder = nn.Sequential(
             nn.Linear(x_dim, 10),
             nn.Tanh(),
-            nn.Linear(10, z_dim) # Latent representation z_c
+            nn.Linear(10, z_dim) 
         )
 
     def forward(self, x):
@@ -45,48 +39,38 @@ class EncoderNet(nn.Module):
         return z_c
 
 class EstimationNet(nn.Module):
-    """
-    The Estimation Network (MLP).
-    Predicts the soft-cluster assignment (gamma) based on the latent vector z_c.
-    """
-    def __init__(self, z_dim, k): # Now uses z_dim directly
+    def __init__(self, z_dim, k): 
         super(EstimationNet, self).__init__()
         # MLP: z_dim -> 10 -> k (number of Gaussian components)
         self.mlp = nn.Sequential(
             nn.Linear(z_dim, 10),
             nn.Tanh(),
             nn.Dropout(0.5),
-            nn.Linear(10, k) # Output raw scores p
+            nn.Linear(10, k)
         )
 
     def forward(self, z):
-        # Output p is the raw score before softmax
         p = self.mlp(z)
-        # Apply softmax to get soft assignments gamma
         gamma = torch.softmax(p, dim=1)
         return gamma
-
-# --- 3. GMM Helper Functions ---
+    
 
 def calculate_gmm_parameters(z, gamma):
-    """
-    Computes the GMM parameters (phi, mu, Sigma) from the combined feature vector z
-    and the soft assignments gamma, for the current batch/dataset.
-    """
-    N = z.size(0) # Batch size or total samples
-    D = z.size(1) # Feature dimension (Z_DIM)
-    K = gamma.size(1) # Number of components
 
-    # 1. Calculate mixture weights (phi)
+    N = z.size(0)
+    D = z.size(1)
+    K = gamma.size(1)
+
+    # phi
     phi = torch.sum(gamma, dim=0) / N
     phi = phi / (torch.sum(phi) + EPSILON)
 
-    # 2. Calculate means (mu)
+    # mu
     gamma_unsqueeze = gamma.unsqueeze(-1)
     mu = torch.sum(z.unsqueeze(1) * gamma_unsqueeze, dim=0)
     mu = mu / (torch.sum(gamma_unsqueeze, dim=0) + EPSILON)
 
-    # 3. Calculate covariance matrices (Sigma)
+    # sigma
     z_mu = z.unsqueeze(1) - mu.unsqueeze(0)
     z_mu_outer = z_mu.unsqueeze(-1) @ z_mu.unsqueeze(-2)
     gamma_unsqueeze_outer = gamma.unsqueeze(-1).unsqueeze(-1)
@@ -94,22 +78,16 @@ def calculate_gmm_parameters(z, gamma):
     Sigma = torch.sum(z_mu_outer * gamma_unsqueeze_outer, dim=0)
     Sigma = Sigma / (torch.sum(gamma_unsqueeze, dim=0).unsqueeze(-1) + EPSILON)
 
-    # Add regularization for stability (COV_EPS * Identity matrix)
+    # regularization
     I = torch.eye(D, device=z.device).unsqueeze(0).repeat(K, 1, 1)
     Sigma = Sigma + I * COV_EPS
 
     return phi, mu, Sigma
 
 def calculate_sample_energy(z, phi, mu, Sigma):
-    """
-    Calculates the energy (negative log-likelihood) of each sample z
-    under the estimated GMM components. This is the anomaly score.
-    """
-    # N: batch size, D: feature dim, K: components
     N, D = z.size()
     K = phi.size(0)
 
-    # Calculate log(pi_k) (log-mixture weights)
     log_phi = torch.log(phi + EPSILON)
 
     # Reshape z to N x 1 x D and mu to 1 x K x D
@@ -263,12 +241,30 @@ def predict_anomaly_scores(model, data_tensor, phi, mu, Sigma):
         # 2. Calculate the anomaly score (Sample Energy)
         scores, _ = calculate_sample_energy(z, phi, mu, Sigma)
         return scores.numpy()
+    
+def get_hard_cluster_assignments(model, data_tensor):
+    """
+    Computes the hard cluster assignment (index of component with max probability)
+    for each sample.
+    """
+    model.eval()
+    with torch.no_grad():
+        # 1. Get latent features Z and soft assignments gamma
+        z, _, gamma = model(data_tensor)
+        # 2. Hard assignment is the index of the maximum probability in gamma
+        # Output is 0-indexed (0 to K-1)
+        cluster_indices = torch.argmax(gamma, dim=1)
+        return cluster_indices.numpy()
 
 # --- 5. MAIN EXECUTION ---
 
 if __name__ == '__main__':
+    # make output folder
+    out_folder = "run1_urban"
+    os.makedirs(out_folder, exist_ok=True)
+
     # 1. Data Setup for Point Cloud (XYZI)
-    pc1 = 'data_mabel_test/pc_072E15NE25NE_20171009.copc.laz' # farm land near medicine hat
+    pc1 = 'Data/segmented_points_urban_w_noise.las'
 
     # load point cloud
     xyz, intensity, classification, scan_angle, header = load_lidar(pc1)
@@ -276,25 +272,18 @@ if __name__ == '__main__':
     # concatenate xyz, intensity
     cp_data = np.hstack((xyz, intensity.reshape(-1, 1) ))
 
-    # grab subset of data (10%)
-    np.random.seed(32)
-    N = cp_data.shape[0]
-    sample_size = int(0.1 * N)
-    indices = np.random.choice(N, sample_size, replace=False)
-    cp_data_subset = cp_data[indices]
-
-    # --- Data Standardization Added Here ---
+    # --- Data Standardization ---
     # Center the data
-    data_mean = np.mean(cp_data_subset, axis=0)
-    cp_data_subset -= data_mean
+    data_mean = np.mean(cp_data, axis=0)
+    cp_data-= data_mean
     # Scale the data (Standardize)
-    data_std = np.std(cp_data_subset, axis=0)
+    data_std = np.std(cp_data, axis=0)
     # Prevent division by zero if a feature is constant
     data_std[data_std == 0] = 1.0 
-    cp_data_subset /= data_std
+    cp_data /= data_std
     print("Data successfully standardized (zero mean, unit variance).")
     
-    point_cloud_dataset = PointCloudDataset(cp_data_subset)
+    point_cloud_dataset = PointCloudDataset(cp_data)
     data_loader = DataLoader(
         point_cloud_dataset,
         batch_size=BATCH_SIZE,
@@ -313,6 +302,8 @@ if __name__ == '__main__':
     print(f"Starting Hyperparameter Search for optimal K: {K_RANGE}")
     print("-" * 50)
 
+    bic_scores = []
+
     for current_k in K_RANGE:
         # 2. Model Initialization (for current K)
         model = DLGMM(x_dim=X_DIM, z_dim=Z_DIM, k=current_k) 
@@ -329,6 +320,8 @@ if __name__ == '__main__':
             sample_energy_full, _ = calculate_sample_energy(z_full, phi_final, mu_final, Sigma_final)
             total_log_likelihood = -torch.sum(sample_energy_full)
             current_bic = calculate_bic(N_samples, current_k, Z_DIM, total_log_likelihood)
+
+            bic_scores.append(current_bic)
             
             # Update best K and save the best model's components
             if current_bic < min_bic:
@@ -344,6 +337,13 @@ if __name__ == '__main__':
     print("\n" + "=" * 50)
     print(f"Optimal K found: {best_k}")
     print("=" * 50)
+
+    # save bic results for plotting
+    bic_results =  np.column_stack((K_RANGE, bic_scores))
+    np.savetxt(out_folder + "/bic_scores.csv", bic_results, delimiter=",")
+
+    # save best model
+    torch.save(best_model_state, out_folder + "/model.pth")
 
     # --- Anomaly Labeling Process ---
     
@@ -363,31 +363,90 @@ if __name__ == '__main__':
     print(f"\n--- Anomaly Labeling Summary ---")
     print(f"Threshold set at {ANOMALY_PERCENTILE}th percentile: {anomaly_threshold:.4f}")
     
-    # 3. Apply Classification to a New Test Set
-    # Generate a small new test set for demonstration
-    # This test set will contain known normal and known anomalous points
-    test_normal = np.random.normal(loc=[10, 10, 5, 0.5], scale=1.0, size=(10, 4))
-    test_anomaly = np.random.uniform(low=[100, 100, 100, 5.0], high=[200, 200, 200, 10.0], size=(5, 4))
-    
-    test_data_np = np.concatenate([test_normal, test_anomaly], axis=0)
-
-    # Apply the same standardization (using the training data's mean and std)
-    test_data_np = (test_data_np - data_mean) / data_std
-
-    test_data_tensor = torch.from_numpy(test_data_np).float()
-    
+    # PERFORM CLUSTERING
+    # Calculate scores and binary classification
     test_scores = predict_anomaly_scores(
-        final_model, test_data_tensor, best_phi, best_mu, best_Sigma
+        final_model, full_data_tensor, best_phi, best_mu, best_Sigma
     )
-
-    # Classify points
     is_anomaly = test_scores > anomaly_threshold
     
+    # Calculate hard cluster assignments (0-indexed) for all test points
+    test_cluster_indices = get_hard_cluster_assignments(final_model, full_data_tensor)
+    
+    # Initialize final labels array
+    final_labels = np.zeros_like(test_scores, dtype=int)
+    
     # 4. Report Results
-    print("\nTest Data Classification:")
-    for i, (score, is_a) in enumerate(zip(test_scores, is_anomaly)):
-        label = "ANOMALY" if is_a else "NORMAL"
-        # The first 10 points are simulated normal, the last 5 are simulated anomalies
-        true_label = "Anomaly (True)" if i >= 10 else "Normal (True)"
+    print("\nClustering with Best Model:")
+    print("-------------------------------------")
+    
+    for i in range(len(test_scores)):
+        score = test_scores[i]
+        is_a = is_anomaly[i]
+        cluster_idx = test_cluster_indices[i]
+
+        # Determine the final label
+        if is_a:
+            # -1 for Outlier/Anomaly
+            final_label_int = -1
+        else:
+            # Cluster index is 0-indexed, so add 1 for user-friendly 1-indexed cluster labels
+            final_label_int = cluster_idx + 1
         
-        print(f"Sample {i+1:02d} | Score: {score:.4f} | Prediction: {label} ({true_label})")
+        # Store the label
+        final_labels[i] = final_label_int
+
+    # accuracy assessment
+    # EXPECTED
+    anomaly_classification = np.zeros_like(test_scores, dtype=int)
+    # low noise (7) and high noise (18)
+    ind = (classification == 7) & (classification == 18)
+    anomaly_classification[ind] = 1
+
+    # PREDICTED
+    anomaly_predicted = np.zeros_like(test_scores, dtype=int)
+    ind = final_labels == -1
+    anomaly_predicted[ind] = 1
+
+    # plotting anomalies
+    visualize_anomalies(xyz, anomaly_predicted, out_folder + "/predicted_anomaly_plot_best_model.png")
+
+    # plotting clusters
+    visualize_clusters(xyz, final_labels, out_folder + "/predicted_clusters_plot_best_model.png")
+
+    # confusion matrix
+    TP = np.sum((anomaly_predicted == 1) & (anomaly_classification == 1))
+    TN = np.sum((anomaly_predicted == 0) & (anomaly_classification == 0))
+    FP = np.sum((anomaly_predicted == 1) & (anomaly_classification == 0))
+    FN = np.sum((anomaly_predicted == 0) & (anomaly_classification == 1))
+    
+    # 4. Calculate Metrics
+    # Total samples
+    total = len(test_scores)
+    
+    # Accuracy: (TP + TN) / Total
+    accuracy = (TP + TN) / total if total > 0 else 0
+    
+    # Precision: TP / (TP + FP)
+    precision = TP / (TP + FP) if (TP + FP) > 0 else 0
+    
+    # Recall (Sensitivity): TP / (TP + FN)
+    recall = TP / (TP + FN) if (TP + FN) > 0 else 0
+    
+    # F1-Score: 2 * (Precision * Recall) / (Precision + Recall)
+    f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+    
+    print("\n" + "=" * 50)
+    print("Anomaly Detection Performance Metrics:")
+    print("=" * 50)
+    print(f"Total Samples: {total}")
+    print(f"True Positives (TP): {TP}")
+    print(f"True Negatives (TN): {TN}")
+    print(f"False Positives (FP): {FP}")
+    print(f"False Negatives (FN): {FN}")
+    print("-" * 50)
+    print(f"Accuracy:  {accuracy:.4f}")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall:    {recall:.4f}")
+    print(f"F1-Score:  {f1_score:.4f}")
+    print("=" * 50)

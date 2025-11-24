@@ -2,12 +2,10 @@ import laspy
 import pyvista as pv
 import numpy as np
 import matplotlib.pyplot as plt
+import os
 
+# function to load lidar point cloud
 def load_lidar(path):
-    """
-    Load a LAZ / COPC LAZ using laspy with full attribute safety.
-    Returns: xyz, intensity, classification, scan_angle, header
-    """
     las = laspy.read(path)
 
     xyz = np.vstack([las.x, las.y, las.z]).T.astype(np.float32)
@@ -28,6 +26,7 @@ def load_lidar(path):
 
     return xyz, intensity, classification, scan_angle, las.header
 
+# function to print out lidar dataset
 def print_lidar(xyz, intensity, classification, output_path, header):
     las = laspy.LasData(header)
 
@@ -37,30 +36,18 @@ def print_lidar(xyz, intensity, classification, output_path, header):
     las.intensity = intensity
     las.classification = classification
 
-    # 4. Write the data to a file
     las.write(output_path)
     print(f"Successfully saved LAS file to: {output_path}")
 
 
+# visualize with true labels
 def visualize(xyz, classification):
-    """
-    Visualize the point cloud in PyVista colored by classification.
-    Selected LAS classes with labels:
-    1: Unclassified
-    2: Ground
-    3: Low Vegetation
-    4: Medium Vegetation
-    5: High Vegetation
-    7: Low Noise
-    9: Water
-    17: Bridge Deck
-    18: High Noise
-    """
+
     if classification is None:
         print("No classification field provided.")
         return
 
-    # Define classes and their labels
+    # define classes and their labels
     class_labels = {
         1: "Unclassified",
         2: "Ground",
@@ -75,7 +62,7 @@ def visualize(xyz, classification):
         28: "Urban"
     }
 
-    # Define RGB colors for each class
+    # define RGB colors for each class
     colors = {
         1: [0.6, 0.6, 0.6],    # gray
         2: [0.8, 0.7, 0.5],    # light brown
@@ -90,7 +77,7 @@ def visualize(xyz, classification):
         28: [0.8, 0.6, 1.0],   # light purple
     }
 
-    # Mask points in selected classes
+    # mask points in selected classes
     mask = np.isin(classification, list(class_labels.keys()))
     xyz_vis = xyz[mask]
     class_vis = classification[mask]
@@ -98,7 +85,7 @@ def visualize(xyz, classification):
     cloud = pv.PolyData(xyz_vis)
     cloud["classification"] = class_vis
 
-    # Map class IDs to RGB colors
+    # map class IDs to RGB colors
     point_colors = np.array([colors[c] for c in class_vis])
     
     plotter = pv.Plotter()
@@ -110,15 +97,108 @@ def visualize(xyz, classification):
         point_size=2
     )
 
-    # Add legend using a list of tuples
+    # add legend using a list of tuples
     legend_entries = [(label, colors[c]) for c, label in class_labels.items()]
     plotter.add_legend(legend_entries)
 
     plotter.show()
 
-NOISE_CLASS = 18  # LAS standard for high-noise/ghost points
+# visualize anomalies
+def visualize_anomalies(xyz, classification, out_path = "anomalies.png"):
 
-# ------------------ Noise Functions ------------------
+    if classification is None:
+        print("No classification field provided.")
+        return
+
+    # define classes and their labels
+    class_labels = {
+        0: "Normal",
+        1: "Anomaly",
+    }
+
+    # define RGB colors for each class
+    colors = {
+        0: [0.0, 0.0, 1.0],    # blue
+        1: [1.0, 0.0, 0.0],   # red
+    }
+
+    # mask points in selected classes
+    mask = np.isin(classification, list(class_labels.keys()))
+    xyz_vis = xyz[mask]
+    class_vis = classification[mask]
+
+    cloud = pv.PolyData(xyz_vis)
+    cloud["classification"] = class_vis
+
+    # map class IDs to RGB colors
+    point_colors = np.array([colors[c] for c in class_vis])
+    
+    plotter = pv.Plotter()
+    plotter.add_points(
+        cloud,
+        scalars=point_colors,
+        rgb=True,
+        render_points_as_spheres=False,
+        point_size=2
+    )
+
+    # add legend using a list of tuples
+    legend_entries = [(label, colors[c]) for c, label in class_labels.items()]
+    plotter.add_legend(legend_entries)
+
+    plotter.show()
+
+    try:
+        plotter.screenshot(
+            out_path,
+            transparent_background=False,
+            scale=2 
+        )
+        print(f"\nSuccessfully saved figure to: {os.path.abspath(out_path)}")
+
+    except Exception as e:
+        print(f"\nAn error occurred while saving the screenshot: {e}")
+    finally:
+        plotter.close()
+
+#  visualize clusters
+def visualize_clusters(xyz, classification, out_path = "clusters.png"):
+
+    if classification is None:
+        print("No classification field provided.")
+        return
+
+    cloud = pv.PolyData(xyz)
+    cloud["class"] = classification
+
+    plotter = pv.Plotter()
+    plotter.add_points(
+        cloud,
+        scalars="class",
+        cmap="jet",
+        point_size=2,
+        render_points_as_spheres=True
+    )
+
+    plotter.show()
+
+    try:
+        plotter.screenshot(
+            out_path,
+            transparent_background=False,
+            scale=2
+        )
+        print(f"\nSuccessfully saved figure to: {os.path.abspath(out_path)}")
+
+    except Exception as e:
+        print(f"\nAn error occurred while saving the screenshot: {e}")
+    finally:
+        plotter.close()
+
+
+NOISE_CLASS = 18  # classification for noise/ outliers
+
+# noise functions
 def random_indices(n_points, n_sample):
     n_sample = min(n_sample, n_points)
     return np.random.choice(n_points, n_sample, replace=False)
@@ -183,41 +263,37 @@ def add_outliers(
     intensity=None,
     num_outliers=10000,
     sigma=2.0
-):
-    """
-    Create outliers by copying random existing points and aggressively perturbing them.
-    These new points are labelled as noise (class 18).
-    """
+    ):
 
-    N = xyz.shape[0]
-    idx = np.random.choice(N, num_outliers, replace=False)
+        N = xyz.shape[0]
+        idx = np.random.choice(N, num_outliers, replace=False)
 
-    # Copy selected points
-    outliers_xyz = xyz[idx].copy()
+        # copy selected points
+        outliers_xyz = xyz[idx].copy()
 
-    # Apply large random displacement
-    outliers_xyz += np.random.normal(0, sigma, size=outliers_xyz.shape)
+        # apply large random displacement
+        outliers_xyz += np.random.normal(0, sigma, size=outliers_xyz.shape)
 
-    outlier_classes = np.full(num_outliers, NOISE_CLASS, dtype=int)
+        outlier_classes = np.full(num_outliers, NOISE_CLASS, dtype=int)
 
-    if classification is not None and intensity is not None:
-        outlier_intensity = intensity[idx].copy()
+        if classification is not None and intensity is not None:
+            outlier_intensity = intensity[idx].copy()
 
-        xyz_combined = np.vstack([xyz, outliers_xyz])
-        class_combined = np.hstack([classification, outlier_classes])
-        intensity_combined = np.hstack([intensity, outlier_intensity])
+            xyz_combined = np.vstack([xyz, outliers_xyz])
+            class_combined = np.hstack([classification, outlier_classes])
+            intensity_combined = np.hstack([intensity, outlier_intensity])
 
-        return xyz_combined, class_combined, intensity_combined
+            return xyz_combined, class_combined, intensity_combined
 
-    elif classification is not None:
-        xyz_combined = np.vstack([xyz, outliers_xyz])
-        class_combined = np.hstack([classification, outlier_classes])
-        return xyz_combined, class_combined
+        elif classification is not None:
+            xyz_combined = np.vstack([xyz, outliers_xyz])
+            class_combined = np.hstack([classification, outlier_classes])
+            return xyz_combined, class_combined
 
-    return np.vstack([xyz, outliers_xyz]), outlier_classes
+        return np.vstack([xyz, outliers_xyz]), outlier_classes
 
-# ------------------ MASTER SIMULATION ------------------
 
+# main noise simulation function
 def simulate_noise(
     xyz,
     intensity=None,
@@ -241,48 +317,41 @@ def simulate_noise(
         n_points = xyz.shape[0]
         all_noisy_indices = set()
 
-        # --- RANGE NOISE ---
         if apply.get("range", False):
             idx = random_indices(n_points, num_per_type)
             noisy_xyz = add_range_noise(noisy_xyz, idx)
             all_noisy_indices.update(idx)
 
-        # --- HORIZONTAL NOISE ---
         if apply.get("horizontal", False):
             idx = random_indices(n_points, num_per_type)
             noisy_xyz = add_horizontal_noise(noisy_xyz, idx)
             all_noisy_indices.update(idx)
 
-        # --- SCAN ANGLE ---
         if apply.get("scan_angle", False) and scan_angle is not None:
             idx = random_indices(n_points, num_per_type)
             noisy_xyz = add_scan_angle_noise(noisy_xyz, scan_angle, idx)
             all_noisy_indices.update(idx)
 
-        # --- SURFACE NOISE ---
         if apply.get("surface", False) and classification is not None:
             idx = random_indices(n_points, num_per_type)
             noisy_xyz = add_surface_noise(noisy_xyz, classification, idx)
             all_noisy_indices.update(idx)
 
-        # --- INTENSITY NOISE ---
         if apply.get("intensity", False) and noisy_intensity is not None:
             idx = random_indices(n_points, num_per_type)
             noisy_intensity = add_intensity_noise(noisy_intensity, idx)
             all_noisy_indices.update(idx)
 
-        # --- RELABEL ALL AFFECTED POINTS ---
         if classification is not None:
             noisy_class[list(all_noisy_indices)] = NOISE_CLASS
 
-        # --- ADD OUTLIERS ---
         if apply.get("outliers", False):
             noisy_xyz, noisy_class, noisy_intensity = add_outliers(
                 noisy_xyz,
                 noisy_class,
                 noisy_intensity,
                 num_outliers=num_outliers,
-                sigma=2.0  # increase for stronger noise
+                sigma=100.0  
             )
 
         return noisy_xyz, noisy_class, noisy_intensity
