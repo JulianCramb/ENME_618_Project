@@ -1,0 +1,30 @@
+
+==================================================
+VAE Anomaly Detection Performance Metrics:
+==================================================
+Total Samples: 220245
+True Positives (TP): 14552
+True Negatives (TN): 177831
+False Positives (FP): 1584
+False Negatives (FN): 26278
+--------------------------------------------------
+Accuracy:  0.8735
+Precision: 0.9018
+Recall:    0.3564
+F1-Score:  0.5109
+==================================================
+
+==================================================
+GMM Anomaly Detection Performance Metrics:
+==================================================
+Total Samples: 220245
+True Positives (TP): 23647
+True Negatives (TN): 163934
+False Positives (FP): 15481
+False Negatives (FN): 17183
+--------------------------------------------------
+Accuracy:  0.8517
+Precision: 0.6043
+Recall:    0.5792
+F1-Score:  0.5915
+==================================================
