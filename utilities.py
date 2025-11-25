@@ -351,7 +351,7 @@ def simulate_noise(
                 noisy_class,
                 noisy_intensity,
                 num_outliers=num_outliers,
-                sigma=100.0  
+                sigma=20.0  
             )
 
         return noisy_xyz, noisy_class, noisy_intensity
