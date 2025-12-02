@@ -213,11 +213,12 @@ if __name__ == '__main__':
         # Total VAE loss
         return recon_loss + kl_div
 
-    out_folder = "run_ae_forest"
+    out_folder = "run_ae_full_forest"
     os.makedirs(out_folder, exist_ok=True)
 
-    #pc1_clean = 'Data/300-5050_2015.las'
-    pc1_clean = 'Data/segmented_points_forest.las'
+    #pc1_clean = 'Data/segmented_points_urban.las'
+    #pc1_clean = 'Data/segmented_points_forest.las'
+    pc1_clean = 'Data/segmented_points_full_forest.las'
     xyz, intensity, classification, scan_angle, header = load_lidar(pc1_clean)
     
     # (1) spatial clustering according to xyz
