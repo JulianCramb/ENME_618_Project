@@ -112,7 +112,7 @@ class AdvancedDenoisingAE(nn.Module):
 class VariationalAutoencoder(nn.Module):
     def __init__(self, input_dim=4, latent_dim=4):
         super(VariationalAutoencoder, self).__init__()
-        
+
         # Encoder: 4 -> 16 -> 8 -> (mu, log_var) for latent_dim
         self.encoder_fc1 = nn.Linear(input_dim, 16)
         self.encoder_fc2 = nn.Linear(16, 8)
@@ -130,7 +130,7 @@ class VariationalAutoencoder(nn.Module):
 
     def encode(self, x):
         h1 = F.relu(self.encoder_fc1(x))
-        h1 = self.dropout(h1) # Apply dropout
+        h1 = self.dropout(h1) 
         h2 = F.relu(self.encoder_fc2(h1))
         
         mu = self.fc_mu(h2)
@@ -166,7 +166,6 @@ class TileDataset(Dataset):
         return len(self.tile_indices_map)
 
     def _add_gaussian_noise(self, data):
-        """Adds Gaussian noise to the data for the DAE input."""
         X_noisy = data + self.noise_factor * np.random.normal(loc=0.0, scale=1.0, size=data.shape)
         return X_noisy #np.clip(X_noisy, 0., 1.)
         
@@ -353,7 +352,7 @@ if __name__ == '__main__':
         print(f"Epoch {epoch+1}/{EPOCHS}, Loss: {epoch_loss:.6f}") 
 
     # training GMM on train dataset
-    print(" Training GMM...")
+    #print(" Training GMM...")
     #gmm_train = gmm
     #gmm_train = GaussianMixture(n_components=N_CLUSTERS, covariance_type='full', random_state=SEED)
     #gmm_train.fit(X_clean_train_norm)
@@ -400,7 +399,6 @@ if __name__ == '__main__':
     print(f"VAE Anomaly Threshold ({THRESHOLD_PERCENTILE}th percentile): {anomaly_threshold:.6f}")
 
     # determining gmm threshold
-    #val_log_likelihoods = gmm_train.score_samples(X_val_norm)
     val_log_likelihoods = gmm.score_samples(X_clean_train_norm)
 
     THRESHOLD_PERCENTILE = 5 
